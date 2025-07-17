@@ -8,16 +8,17 @@ import (
 	"time"
 
 	"github.com/erikgeiser/promptkit/confirmation"
+	"github.com/francoisovh/migratekit/cmd"
+	"github.com/francoisovh/migratekit/internal/nbdkit"
+	"github.com/francoisovh/migratekit/internal/openstack"
+	"github.com/francoisovh/migratekit/internal/target"
+	"github.com/francoisovh/migratekit/internal/vmware"
+	"github.com/francoisovh/migratekit/internal/vmware_nbdkit"
+	"github.com/google/uuid"
 	"github.com/gophercloud/gophercloud/v2/openstack/compute/v2/flavors"
 	log "github.com/sirupsen/logrus"
 	"github.com/spf13/cobra"
 	"github.com/thediveo/enumflag/v2"
-	"github.com/vexxhost/migratekit/cmd"
-	"github.com/vexxhost/migratekit/internal/nbdkit"
-	"github.com/vexxhost/migratekit/internal/openstack"
-	"github.com/vexxhost/migratekit/internal/target"
-	"github.com/vexxhost/migratekit/internal/vmware"
-	"github.com/vexxhost/migratekit/internal/vmware_nbdkit"
 	"github.com/vmware/govmomi/find"
 	"github.com/vmware/govmomi/object"
 	"github.com/vmware/govmomi/session"
@@ -91,7 +92,7 @@ var rootCmd = &cobra.Command{
 		}
 
 		var err error
-
+		jobID := uuid.NewString()
 		// validBuses := []string{"scsi", "virtio"}
 		// if !slices.Contains(validBuses, busType) {
 		// 	log.Fatal("Invalid bus type: ", busType, ". Valid options are: ", validBuses)
@@ -184,7 +185,8 @@ var rootCmd = &cobra.Command{
 			Thumbprint:  thumbprint,
 			Compression: nbdkit.CompressionMethod(CompressionMethodOptsIds[compressionMethod][0]),
 		})
-
+		ctx = context.WithValue(ctx, "jobID", jobID)
+		log.Info("Starting job : ", jobID)
 		log.Info("Setting Disk Bus: ", BusTypeOptsIds[busType][0])
 		v := target.VolumeCreateOpts{
 			AvailabilityZone: availabilityZone,
@@ -218,7 +220,6 @@ It handles the following additional cases as well:
 - If VMware indicates the change tracking has reset, it will do a full copy.`,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		ctx := cmd.Context()
-
 		vm := ctx.Value("vm").(*object.VirtualMachine)
 		vddkConfig := ctx.Value("vddkConfig").(*vmware_nbdkit.VddkConfig)
 
@@ -244,7 +245,6 @@ var cutoverCmd = &cobra.Command{
 - Spin up the new OpenStack virtual machine with the migrated disk`,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		ctx := cmd.Context()
-
 		vm := ctx.Value("vm").(*object.VirtualMachine)
 		vddkConfig := ctx.Value("vddkConfig").(*vmware_nbdkit.VddkConfig)
 
