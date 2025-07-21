@@ -73,6 +73,7 @@ var (
 	vzUnsafeVolumeByName bool
 	osType               string
     enableQemuGuestAgent bool
+	jobID             string
 )
 
 var rootCmd = &cobra.Command{
@@ -91,7 +92,8 @@ var rootCmd = &cobra.Command{
 		}
 
 		var err error
-		jobID := uuid.NewString()
+		// jobID := os.Getenv("JOB_ID")
+		// jobID := uuid.NewString()
 		// validBuses := []string{"scsi", "virtio"}
 		// if !slices.Contains(validBuses, busType) {
 		// 	log.Fatal("Invalid bus type: ", busType, ". Valid options are: ", validBuses)
@@ -184,6 +186,7 @@ var rootCmd = &cobra.Command{
 			Thumbprint:  thumbprint,
 			Compression: nbdkit.CompressionMethod(CompressionMethodOptsIds[compressionMethod][0]),
 		})
+		// ctx = context.WithValue(context.Background(), "jobID", jobID)
 		ctx = context.WithValue(ctx, "jobID", jobID)
 		log.Info("Starting job : ", jobID)
 		log.Info("Setting Disk Bus: ", BusTypeOptsIds[busType][0])
@@ -352,6 +355,9 @@ func init() {
     rootCmd.PersistentFlags().StringVar(&osType, "os-type", "", "Set os_type in the volume (image) metadata, (if set to \"auto\", it tries to detect the type from VMware GuestId)")
 
     rootCmd.PersistentFlags().BoolVar(&enableQemuGuestAgent, "enable-qemu-guest-agent", false, "Sets the hw_qemu_guest_agent metadata parameter to yes")
+
+	rootCmd.PersistentFlags().StringVar(&jobID, "jobID", "", "UUID for the job created")
+	rootCmd.MarkPersistentFlagRequired("jobID")
 
 	cutoverCmd.Flags().StringVar(&flavorId, "flavor", "", "OpenStack Flavor ID")
 	cutoverCmd.MarkFlagRequired("flavor")
