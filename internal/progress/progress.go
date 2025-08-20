@@ -12,8 +12,42 @@ import (
 	"github.com/gorilla/websocket"
 	"github.com/k0kubun/go-ansi"
 	"github.com/schollz/progressbar/v3"
+	"github.com/sirupsen/logrus"
 	"github.com/vmware/govmomi/vim25/progress"
 )
+
+type WebSocketHook struct {
+	conn  *websocket.Conn
+	jobID string
+}
+
+func NewWebSocketHook(wsURL, jobID string) (*WebSocketHook, error) {
+	u, err := url.Parse(wsURL)
+	if err != nil {
+		return nil, fmt.Errorf("invalid WebSocket URL: %w", err)
+	}
+
+	conn, _, err := websocket.DefaultDialer.Dial(u.String()+"?job_id="+jobID, nil)
+	if err != nil {
+		return nil, fmt.Errorf("failed to connect to WebSocket: %w", err)
+	}
+
+	return &WebSocketHook{conn: conn, jobID: jobID}, nil
+}
+
+func (h *WebSocketHook) Fire(entry *logrus.Entry) error {
+	msg, err := entry.String()
+	if err != nil {
+		return err
+	}
+
+	// Send log entry as text
+	return h.conn.WriteMessage(websocket.TextMessage, []byte(msg))
+}
+
+func (h *WebSocketHook) Levels() []logrus.Level {
+	return logrus.AllLevels
+}
 
 var theme = progressbar.Theme{
 	Saucer:        "[green]=[reset]",
@@ -132,6 +166,16 @@ func NewVMwareProgressBar(jobID string, task string) *VMwareProgressBar {
 		reporter = nil // fallback to just terminal bar
 	}
 
+	// Connect WebSocket log hook
+	hook, err := NewWebSocketHook("ws://websocket-service.migratekit.svc.cluster.local/logs", jobID)
+	if err != nil {
+		logrus.Warnf("websocket hook disabled: %v", err)
+	} else {
+		logrus.AddHook(hook)
+	}
+
+	logrus.Info(task)
+
 	return &VMwareProgressBar{
 		bar:      bar,
 		ch:       make(chan progress.Report),
@@ -155,6 +199,16 @@ func NewDataProgressReporter(desc string, size int64, reporter ProgressReporter,
 			reporter = r
 		}
 	}
+
+	// Connect WebSocket log hook
+	hook, err := NewWebSocketHook("ws://websocket-service.migratekit.svc.cluster.local/logs", jobID)
+	if err != nil {
+		logrus.Warnf("websocket hook disabled: %v", err)
+	} else {
+		logrus.AddHook(hook)
+	}
+
+	logrus.Info(desc)
 
 	return &VMwareProgressBar{
 		bar:      bar,
