@@ -57,20 +57,23 @@ var CompressionMethodOptsIds = map[CompressionMethodOpts][]string{
 }
 
 var (
-	debug             bool
-	endpoint          string
-	username          string
-	password          string
-	path              string
-	compressionMethod CompressionMethodOpts = Skipz
-	flavorId          string
-	networkMapping    cmd.NetworkMappingFlag
-	availabilityZone  string
-	volumeType        string
-	securityGroups    []string
-	enablev2v         bool
-	busType           BusTypeOpts
-	jobID             string
+	debug                bool
+	endpoint             string
+	username             string
+	password             string
+	path                 string
+	compressionMethod    CompressionMethodOpts = Skipz
+	flavorId             string
+	networkMapping       cmd.NetworkMappingFlag
+	availabilityZone     string
+	volumeType           string
+	securityGroups       []string
+	enablev2v            bool
+	busType              BusTypeOpts
+	vzUnsafeVolumeByName bool
+	osType               string
+	enableQemuGuestAgent bool
+	jobID                string
 )
 
 var rootCmd = &cobra.Command{
@@ -340,6 +343,12 @@ func init() {
 	rootCmd.PersistentFlags().StringVar(&volumeType, "volume-type", "", "Openstack volume type")
 
 	rootCmd.PersistentFlags().Var(enumflag.New(&busType, "disk-bus-type", BusTypeOptsIds, enumflag.EnumCaseInsensitive), "disk-bus-type", "Specifies the type of disk controller to attach disk devices to.")
+
+	rootCmd.PersistentFlags().BoolVar(&vzUnsafeVolumeByName, "vz-unsafe-volume-by-name", false, "Only use the name to find a volume - workaround for virtuozzu - dangerous option")
+
+	rootCmd.PersistentFlags().StringVar(&osType, "os-type", "", "Set os_type in the volume (image) metadata, (if set to \"auto\", it tries to detect the type from VMware GuestId)")
+
+	rootCmd.PersistentFlags().BoolVar(&enableQemuGuestAgent, "enable-qemu-guest-agent", false, "Sets the hw_qemu_guest_agent metadata parameter to yes")
 
 	rootCmd.PersistentFlags().StringVar(&jobID, "jobID", "", "UUID for the job created")
 	rootCmd.MarkPersistentFlagRequired("jobID")

@@ -1,6 +1,7 @@
 package progress
 
 import (
+	"encoding/json"
 	"fmt"
 	"net"
 	"os"
@@ -16,36 +17,43 @@ import (
 	"github.com/vmware/govmomi/vim25/progress"
 )
 
-type WebSocketHook struct {
+type WebSocketLogHook struct {
 	conn  *websocket.Conn
 	jobID string
 }
 
-func NewWebSocketHook(wsURL, jobID string) (*WebSocketHook, error) {
-	u, err := url.Parse(wsURL)
+func NewWebSocketLogHook(serverURL, jobID string) (*WebSocketLogHook, error) {
+	u, err := url.Parse(serverURL)
 	if err != nil {
-		return nil, fmt.Errorf("invalid WebSocket URL: %w", err)
+		return nil, fmt.Errorf("invalid url: %w", err)
+	}
+	q := u.Query()
+	q.Set("job_id", jobID)
+	u.RawQuery = q.Encode()
+
+	conn, _, err := websocket.DefaultDialer.Dial(u.String(), nil)
+	if err != nil {
+		return nil, fmt.Errorf("dial error: %w", err)
 	}
 
-	conn, _, err := websocket.DefaultDialer.Dial(u.String()+"?job_id="+jobID, nil)
-	if err != nil {
-		return nil, fmt.Errorf("failed to connect to WebSocket: %w", err)
-	}
-
-	return &WebSocketHook{conn: conn, jobID: jobID}, nil
+	return &WebSocketLogHook{conn: conn, jobID: jobID}, nil
 }
 
-func (h *WebSocketHook) Fire(entry *logrus.Entry) error {
+func (h *WebSocketLogHook) Fire(entry *logrus.Entry) error {
 	msg, err := entry.String()
 	if err != nil {
 		return err
 	}
 
-	// Send log entry as text
-	return h.conn.WriteMessage(websocket.TextMessage, []byte(msg))
+	data, _ := json.Marshal(ProgressMessage{
+		Type:    "log",
+		Message: msg,
+		JobID:   h.jobID,
+	})
+	return h.conn.WriteMessage(websocket.TextMessage, data)
 }
 
-func (h *WebSocketHook) Levels() []logrus.Level {
+func (h *WebSocketLogHook) Levels() []logrus.Level {
 	return logrus.AllLevels
 }
 
@@ -167,7 +175,7 @@ func NewVMwareProgressBar(jobID string, task string) *VMwareProgressBar {
 	}
 
 	// Connect WebSocket log hook
-	hook, err := NewWebSocketHook("ws://websocket-service.migratekit.svc.cluster.local/logs", jobID)
+	hook, err := NewWebSocketLogHook("ws://websocket-service.migratekit.svc.cluster.local/progress?job_id=", jobID)
 	if err != nil {
 		logrus.Warnf("websocket hook disabled: %v", err)
 	} else {
@@ -201,7 +209,7 @@ func NewDataProgressReporter(desc string, size int64, reporter ProgressReporter,
 	}
 
 	// Connect WebSocket log hook
-	hook, err := NewWebSocketHook("ws://websocket-service.migratekit.svc.cluster.local/logs", jobID)
+	hook, err := NewWebSocketLogHook("ws://websocket-service.migratekit.svc.cluster.local/progress?job_id=", jobID)
 	if err != nil {
 		logrus.Warnf("websocket hook disabled: %v", err)
 	} else {
