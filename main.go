@@ -14,7 +14,6 @@ import (
 	"github.com/francoisovh/migratekit/internal/target"
 	"github.com/francoisovh/migratekit/internal/vmware"
 	"github.com/francoisovh/migratekit/internal/vmware_nbdkit"
-	"github.com/google/uuid"
 	"github.com/gophercloud/gophercloud/v2/openstack/compute/v2/flavors"
 	log "github.com/sirupsen/logrus"
 	"github.com/spf13/cobra"
