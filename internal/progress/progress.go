@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"log"
+	"net/http"
 	"net/url"
 
 	"github.com/gorilla/websocket"
@@ -20,6 +21,14 @@ import (
 type WebSocketLogHook struct {
 	conn  *websocket.Conn
 	jobID string
+}
+
+type MigrationJob struct {
+	JobID     string `json:"job_id"`
+	VMName    string `json:"vm_name"`
+	Status    string `json:"status"`
+	CreatedAt string `json:"created_at"`
+	UpdatedAt string `json:"updated_at"`
 }
 
 func NewWebSocketLogHook(serverURL, jobID string) (*WebSocketLogHook, error) {
@@ -101,7 +110,6 @@ type VMwareProgressBar struct {
 	bar      *progressbar.ProgressBar
 	ch       chan progress.Report
 	reporter ProgressReporter
-	jobID    string
 }
 
 type ProgressReporter interface {
@@ -113,11 +121,36 @@ type ProgressMessage struct {
 	Percent int    `json:"percent"`
 	Message string `json:"message"`
 	JobID   string `json:"job_id"`
+	VMName  string `json:"vm_name"`
 }
 
 type WebSocketProgressReporter struct {
-	conn  *websocket.Conn
-	jobID string
+	conn   *websocket.Conn
+	jobID  string
+	VMName string
+}
+
+func getVMNameFromAPI(jobID string) string {
+	url := fmt.Sprintf("http://migratekit-svc.migratekit.svc.cluster.local/api/migration-jobs/%s/", jobID)
+
+	resp, err := http.Get(url)
+	if err != nil {
+		log.Printf("Error fetching job info: %v", err)
+		return "unknown-vm"
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return "unknown-vm"
+	}
+
+	var job MigrationJob
+	if err := json.NewDecoder(resp.Body).Decode(&job); err != nil {
+		log.Printf("Error decoding job info: %v", err)
+		return "unknown-vm"
+	}
+
+	return job.VMName
 }
 
 func NewWebSocketProgressReporter(serverURL string) (*WebSocketProgressReporter, error) {
@@ -127,6 +160,7 @@ func NewWebSocketProgressReporter(serverURL string) (*WebSocketProgressReporter,
 	}
 
 	jobID := u.Query().Get("job_id")
+	vmName := getVMNameFromAPI(jobID)
 	dialer := websocket.Dialer{
 		NetDial: (&net.Dialer{
 			Timeout: 3 * time.Second,
@@ -137,15 +171,17 @@ func NewWebSocketProgressReporter(serverURL string) (*WebSocketProgressReporter,
 		return nil, fmt.Errorf("failed to connect to WebSocket server: %w", err)
 	}
 
-	return &WebSocketProgressReporter{conn: conn, jobID: jobID}, nil
+	return &WebSocketProgressReporter{conn: conn, jobID: jobID, VMName: vmName}, nil
 }
 
 func (w *WebSocketProgressReporter) Percent(percent int, message string) {
+
 	msg := ProgressMessage{
 		Type:    "progress",
 		Percent: percent,
 		Message: message,
 		JobID:   w.jobID,
+		VMName:  w.VMName,
 	}
 
 	if err := w.conn.WriteJSON(msg); err != nil {
@@ -155,15 +191,6 @@ func (w *WebSocketProgressReporter) Percent(percent int, message string) {
 func (w *WebSocketProgressReporter) Close() error {
 	return w.conn.Close()
 }
-
-// func NewVMwareProgressBar(task string) *VMwareProgressBar {
-// 	bar := PercentageProgressBar(task)
-
-// 	return &VMwareProgressBar{
-// 		bar: bar,
-// 		ch:  make(chan progress.Report),
-// 	}
-// }
 
 func NewVMwareProgressBar(jobID string, task string) *VMwareProgressBar {
 	bar := PercentageProgressBar(task)
