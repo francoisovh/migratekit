@@ -1,8 +1,12 @@
 package main
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
+	"fmt"
+	"net/http"
 	"net/url"
 	"os"
 	"time"
@@ -27,6 +31,8 @@ import (
 	"github.com/vmware/govmomi/vim25/soap"
 	"github.com/vmware/govmomi/vim25/types"
 )
+
+const djangoAPI = "http://migratekit-svc.migratekit.svc.cluster.local/api/migration-jobs/"
 
 type BusTypeOpts enumflag.Flag
 
@@ -72,7 +78,8 @@ var (
 	busType              BusTypeOpts
 	vzUnsafeVolumeByName bool
 	osType               string
-    enableQemuGuestAgent bool
+	enableQemuGuestAgent bool
+	jobID                string
 )
 
 var rootCmd = &cobra.Command{
@@ -91,14 +98,10 @@ var rootCmd = &cobra.Command{
 		}
 
 		var err error
-		jobID := uuid.NewString()
-		// validBuses := []string{"scsi", "virtio"}
-		// if !slices.Contains(validBuses, busType) {
-		// 	log.Fatal("Invalid bus type: ", busType, ". Valid options are: ", validBuses)
-		// }
 
 		thumbprint, err := vmware.GetEndpointThumbprint(endpointUrl)
 		if err != nil {
+			_ = updateJobStatus(jobID, "failed")
 			return err
 		}
 
@@ -108,6 +111,7 @@ var rootCmd = &cobra.Command{
 		vimClient, err := vim25.NewClient(ctx, soapClient)
 		if err != nil {
 			log.WithError(err).Error("Failed to create VMware client")
+			_ = updateJobStatus(jobID, "failed")
 			return err
 		}
 
@@ -121,6 +125,7 @@ var rootCmd = &cobra.Command{
 		err = mgr.Login(ctx, endpointUrl.User)
 		if err != nil {
 			log.WithError(err).Error("Failed to login to VMware")
+			_ = updateJobStatus(jobID, "failed")
 			return err
 		}
 
@@ -134,6 +139,7 @@ var rootCmd = &cobra.Command{
 
 				vms, err := finder.VirtualMachineList(ctx, "*")
 				if err != nil {
+					_ = updateJobStatus(jobID, "failed")
 					return err
 				}
 
@@ -143,6 +149,7 @@ var rootCmd = &cobra.Command{
 
 				os.Exit(1)
 			default:
+				_ = updateJobStatus(jobID, "failed")
 				return err
 			}
 		}
@@ -150,10 +157,12 @@ var rootCmd = &cobra.Command{
 		var o mo.VirtualMachine
 		err = vm.Properties(ctx, vm.Reference(), []string{"config"}, &o)
 		if err != nil {
+			_ = updateJobStatus(jobID, "failed")
 			return err
 		}
 
 		if o.Config.ChangeTrackingEnabled == nil || !*o.Config.ChangeTrackingEnabled {
+			_ = updateJobStatus(jobID, "failed")
 			return errors.New("change tracking is not enabled on the virtual machine")
 		}
 
@@ -163,6 +172,7 @@ var rootCmd = &cobra.Command{
 			input := confirmation.New("Delete existing snapshot?", confirmation.Undecided)
 			delete, err := input.RunPrompt()
 			if err != nil {
+				_ = updateJobStatus(jobID, "failed")
 				return err
 			}
 
@@ -170,9 +180,11 @@ var rootCmd = &cobra.Command{
 				consolidate := true
 				_, err := vm.RemoveSnapshot(ctx, snapshotRef.Value, false, &consolidate)
 				if err != nil {
+					_ = updateJobStatus(jobID, "failed")
 					return err
 				}
 			} else {
+				_ = updateJobStatus(jobID, "failed")
 				return errors.New("unable to continue without deleting existing snapshot")
 			}
 		}
@@ -225,10 +237,15 @@ It handles the following additional cases as well:
 		servers := vmware_nbdkit.NewNbdkitServers(vddkConfig, vm)
 		err := servers.MigrationCycle(ctx, false)
 		if err != nil {
+			_ = updateJobStatus(jobID, "failed")
 			return err
 		}
 
 		log.Info("Migration completed")
+		err = updateJobStatus(jobID, "completed")
+		if err != nil {
+			fmt.Printf("[ERROR] Could not update job status: %v\n", err)
+		}
 		return nil
 	},
 }
@@ -249,6 +266,7 @@ var cutoverCmd = &cobra.Command{
 
 		clients, err := openstack.NewClientSet(ctx)
 		if err != nil {
+			_ = updateJobStatus(jobID, "failed")
 			return err
 		}
 
@@ -256,6 +274,7 @@ var cutoverCmd = &cobra.Command{
 
 		flavor, err := flavors.Get(ctx, clients.Compute, flavorId).Extract()
 		if err != nil {
+			_ = updateJobStatus(jobID, "failed")
 			return err
 		}
 
@@ -271,6 +290,7 @@ var cutoverCmd = &cobra.Command{
 
 		networks, err := clients.EnsurePortsForVirtualMachine(ctx, vm, &networkMapping)
 		if err != nil {
+			_ = updateJobStatus(jobID, "failed")
 			return err
 		}
 
@@ -279,6 +299,7 @@ var cutoverCmd = &cobra.Command{
 		servers := vmware_nbdkit.NewNbdkitServers(vddkConfig, vm)
 		err = servers.MigrationCycle(ctx, false)
 		if err != nil {
+			_ = updateJobStatus(jobID, "failed")
 			return err
 		}
 
@@ -286,6 +307,7 @@ var cutoverCmd = &cobra.Command{
 
 		powerState, err := vm.PowerState(ctx)
 		if err != nil {
+			_ = updateJobStatus(jobID, "failed")
 			return err
 		}
 
@@ -294,11 +316,13 @@ var cutoverCmd = &cobra.Command{
 		} else {
 			err := vm.ShutdownGuest(ctx)
 			if err != nil {
+				_ = updateJobStatus(jobID, "failed")
 				return err
 			}
 
 			err = vm.WaitForPowerState(ctx, types.VirtualMachinePowerStatePoweredOff)
 			if err != nil {
+				_ = updateJobStatus(jobID, "failed")
 				return err
 			}
 
@@ -308,6 +332,7 @@ var cutoverCmd = &cobra.Command{
 		servers = vmware_nbdkit.NewNbdkitServers(vddkConfig, vm)
 		err = servers.MigrationCycle(ctx, enablev2v)
 		if err != nil {
+			_ = updateJobStatus(jobID, "failed")
 			return err
 		}
 
@@ -315,13 +340,50 @@ var cutoverCmd = &cobra.Command{
 
 		err = clients.CreateResourcesForVirtualMachine(ctx, vm, flavorId, networks, availabilityZone)
 		if err != nil {
+			_ = updateJobStatus(jobID, "failed")
 			return err
 		}
 
 		log.Info("Cutover completed")
+		err = updateJobStatus(jobID, "completed")
+		if err != nil {
+			fmt.Printf("[ERROR] Could not update job status: %v\n", err)
+		}
 
 		return nil
 	},
+}
+
+func updateJobStatus(jobID, newStatus string) error {
+	url := fmt.Sprintf("%s%s/", djangoAPI, jobID)
+
+	payload := map[string]string{
+		"status": newStatus,
+	}
+	jsonData, err := json.Marshal(payload)
+	if err != nil {
+		return fmt.Errorf("failed to marshal payload: %w", err)
+	}
+
+	req, err := http.NewRequest(http.MethodPatch, url, bytes.NewBuffer(jsonData))
+	if err != nil {
+		return fmt.Errorf("failed to create request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+
+	client := &http.Client{}
+	resp, err := client.Do(req)
+	if err != nil {
+		return fmt.Errorf("request failed: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode >= 300 {
+		return fmt.Errorf("update failed with status: %s", resp.Status)
+	}
+
+	fmt.Printf("[OK] Updated job %s → %s\n", jobID, newStatus)
+	return nil
 }
 
 func init() {
@@ -349,9 +411,12 @@ func init() {
 
 	rootCmd.PersistentFlags().BoolVar(&vzUnsafeVolumeByName, "vz-unsafe-volume-by-name", false, "Only use the name to find a volume - workaround for virtuozzu - dangerous option")
 
-    rootCmd.PersistentFlags().StringVar(&osType, "os-type", "", "Set os_type in the volume (image) metadata, (if set to \"auto\", it tries to detect the type from VMware GuestId)")
+	rootCmd.PersistentFlags().StringVar(&osType, "os-type", "", "Set os_type in the volume (image) metadata, (if set to \"auto\", it tries to detect the type from VMware GuestId)")
 
-    rootCmd.PersistentFlags().BoolVar(&enableQemuGuestAgent, "enable-qemu-guest-agent", false, "Sets the hw_qemu_guest_agent metadata parameter to yes")
+	rootCmd.PersistentFlags().BoolVar(&enableQemuGuestAgent, "enable-qemu-guest-agent", false, "Sets the hw_qemu_guest_agent metadata parameter to yes")
+
+	rootCmd.PersistentFlags().StringVar(&jobID, "jobID", "", "UUID for the job created")
+	rootCmd.MarkPersistentFlagRequired("jobID")
 
 	cutoverCmd.Flags().StringVar(&flavorId, "flavor", "", "OpenStack Flavor ID")
 	cutoverCmd.MarkFlagRequired("flavor")
